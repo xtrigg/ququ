@@ -69,7 +69,7 @@ function updateUI() {
 // Save settings
 async function saveSettings() {
     try {
-        const newConfig = {
+        const rawConfig = {
             autoLaunch: document.getElementById('autoLaunch').checked,
             mode: document.getElementById('mode').value,
             targetLanguage: document.getElementById('targetLanguage').value,
@@ -116,7 +116,46 @@ async function saveSettings() {
             quickTriggerHotkey: document.getElementById('quickTriggerHotkey').value.trim(),
         };
 
-        config = await ipcRenderer.invoke('save-config', newConfig);
+        // 清洗所有字符串字段：移除孤立 surrogate（Windows 输入法/复制粘贴可能产生）
+        // 这是 IPC "conversion failure" 的常见根因
+        function sanitize(obj) {
+            if (typeof obj === 'string') {
+                return obj.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+            }
+            if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+                const out = {};
+                for (const k of Object.keys(obj)) out[k] = sanitize(obj[k]);
+                return out;
+            }
+            return obj;
+        }
+
+        // 用 JSON 圆环序列化剥离任何不可结构化克隆的字段（避免 IPC 序列化失败）
+        let newConfig;
+        try {
+            newConfig = sanitize(JSON.parse(JSON.stringify(rawConfig)));
+        } catch (jsonErr) {
+            console.error('[saveSettings] 配置序列化失败:', jsonErr);
+            console.error('rawConfig:', rawConfig);
+            alert('配置无法序列化: ' + jsonErr.message);
+            return;
+        }
+
+        try {
+            config = await ipcRenderer.invoke('save-config', newConfig);
+        } catch (ipcErr) {
+            console.error('[saveSettings] IPC 失败:', ipcErr);
+            console.error('newConfig:', newConfig);
+            // 找出哪个字段有问题
+            for (const k of Object.keys(newConfig)) {
+                try {
+                    JSON.parse(JSON.stringify(newConfig[k]));
+                } catch (e) {
+                    console.error(`字段 ${k} 序列化失败:`, e.message, 'value:', newConfig[k]);
+                }
+            }
+            throw ipcErr;
+        }
 
         // Update translator config
         await ipcRenderer.invoke('update-translator-config', {
